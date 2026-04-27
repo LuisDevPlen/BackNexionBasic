@@ -22,8 +22,33 @@ app.use(
 );
 app.use(express.json());
 
+/** Health sem BD — útil na Vercel/Observability mesmo se DATABASE_URL falhar */
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true });
+});
+
+/** Na Vercel (serverless), prepara BD antes das rotas que precisam do pool — uma vez por cold start */
+let preparePromise;
+async function prepareServer() {
+  if (!process.env.DATABASE_URL) {
+    throw new Error('Defina DATABASE_URL (Neon ou Postgres)');
+  }
+  if (!process.env.JWT_SECRET) {
+    throw new Error('Defina JWT_SECRET');
+  }
+  await initDb();
+  await ensureDefaultAdmin();
+  await seedSampleProducts();
+}
+
+app.use(async (_req, _res, next) => {
+  try {
+    preparePromise ||= prepareServer();
+    await preparePromise;
+    next();
+  } catch (err) {
+    next(err);
+  }
 });
 
 app.use('/api/auth', authRoutes);
@@ -33,6 +58,11 @@ app.use('/api/adicionais', adicionaisRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/orders', orderRoutes);
+
+app.use((err, _req, res, _next) => {
+  console.error(err);
+  res.status(500).json({ error: err.message || 'Erro interno' });
+});
 
 async function seedSampleProducts() {
   const { rows } = await pool.query('SELECT COUNT(*)::int AS c FROM produto');
@@ -73,24 +103,18 @@ async function ensureDefaultAdmin() {
   console.log(`Usuário admin criado: ${email} (altere a senha em produção)`);
 }
 
-async function start() {
-  if (!process.env.DATABASE_URL) {
-    console.error('Defina DATABASE_URL no arquivo .env (veja .env.example)');
-    process.exit(1);
-  }
-  if (!process.env.JWT_SECRET) {
-    console.error('Defina JWT_SECRET no arquivo .env');
-    process.exit(1);
-  }
-  await initDb();
-  await ensureDefaultAdmin();
-  await seedSampleProducts();
+async function startLocal() {
+  await prepareServer();
   app.listen(PORT, () => {
     console.log(`API Nexion em http://localhost:${PORT}`);
   });
 }
 
-start().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (!process.env.VERCEL) {
+  startLocal().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
+
+export default app;
