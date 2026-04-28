@@ -29,13 +29,37 @@ function corsAllowedList() {
     .filter(Boolean);
 }
 
+/**
+ * Preview na Vercel usa URL longa (branch / PR), ex.:
+ * https://front-nexion-basic-git-main-xxxx.vercel.app — não coincide com produção curta.
+ */
+function isOriginAllowed(origin) {
+  if (!origin) return true;
+  if (corsAllowedList().includes(origin)) return true;
+
+  try {
+    const u = new URL(origin);
+    const host = u.hostname.toLowerCase();
+
+    // localhost Angular dev
+    if (host === 'localhost' || host === '127.0.0.1') return true;
+
+    /** Front Nexion na Vercel (produção ou preview Git) — hostname inclui "nexion" */
+    if (host.endsWith('.vercel.app') && /nexion/i.test(host)) return true;
+
+    /** Desativar por defeito; defina "1" só se precisar abrir outros *.vercel.app no mesmo projeto */
+    if (process.env.CORS_ALLOW_ANY_VERCEL === '1' && host.endsWith('.vercel.app')) return true;
+  } catch {
+    return false;
+  }
+
+  return false;
+}
+
 app.use(
   cors({
     origin(origin, callback) {
-      const allowed = corsAllowedList();
-      if (!origin) return callback(null, true);
-      if (allowed.includes(origin)) return callback(null, true);
-      callback(null, false);
+      callback(null, isOriginAllowed(origin));
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -97,7 +121,7 @@ app.use('/api/orders', orderRoutes);
 
 function applyCorsOnError(req, res) {
   const origin = req.headers.origin;
-  if (origin && corsAllowedList().includes(origin)) {
+  if (origin && isOriginAllowed(origin)) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Access-Control-Allow-Credentials', 'true');
   }
