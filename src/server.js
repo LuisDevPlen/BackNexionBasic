@@ -1,5 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import cors from 'cors';
 import { pool, initDb } from './db.js';
 import authRoutes from './routes/auth.js';
@@ -13,6 +15,10 @@ import bcrypt from 'bcryptjs';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/** Imagens enviadas pelo admin (produtos): GET /uploads/products/… */
+app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 
 /** Várias origens: CORS_ORIGIN="https://front.vercel.app,http://localhost:4200" */
 function corsAllowedList() {
@@ -36,7 +42,10 @@ app.use(
     allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
-app.use(express.json());
+/** Produtos com imagem em base64 no JSON — limite explícito em bytes (evita falhas de parsing de string tipo "12mb") */
+const JSON_BODY_LIMIT = 52 * 1024 * 1024; // 52 MB
+app.use(express.json({ limit: JSON_BODY_LIMIT }));
+app.use(express.urlencoded({ extended: true, limit: JSON_BODY_LIMIT }));
 
 app.get('/', (_req, res) => {
   res.json({
@@ -96,8 +105,21 @@ function applyCorsOnError(req, res) {
 
 app.use((err, req, res, _next) => {
   applyCorsOnError(req, res);
+  const tooLarge =
+    err?.status === 413 ||
+    err?.statusCode === 413 ||
+    err?.type === 'entity.too.large' ||
+    err?.name === 'PayloadTooLargeError' ||
+    /too large/i.test(String(err?.message ?? ''));
+  if (tooLarge) {
+    return res.status(413).json({
+      error:
+        'Pedido demasiado grande (imagem em base64). Escolha uma foto mais pequena ou comprima antes.',
+    });
+  }
   console.error(err);
-  res.status(500).json({ error: err.message || 'Erro interno' });
+  const status = Number(err?.statusCode || err?.status) || 500;
+  res.status(status).json({ error: err.message || 'Erro interno' });
 });
 
 async function seedSampleProducts() {
