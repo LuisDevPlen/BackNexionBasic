@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { pool } from '../db.js';
+import { pool, advisoryLockUsuario } from '../db.js';
 import { authenticateToken, requireAdmin } from '../middleware/auth.js';
 
 const router = Router();
@@ -149,6 +149,7 @@ router.post('/checkout', authenticateToken, async (req, res) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
+    await advisoryLockUsuario(client, req.user.id);
     const cart = await client.query(
       `SELECT c.id, c.produto_id, c.quantidade, c.adicional_quantidades, p.preco
        FROM carrinho c
@@ -190,8 +191,14 @@ router.post('/checkout', authenticateToken, async (req, res) => {
     await client.query('COMMIT');
     res.status(201).json(pedido);
   } catch (e) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => {});
     console.error(e);
+    if (e.code === '40P01') {
+      return res.status(503).json({
+        error: 'Sistema ocupado. Tente finalizar o pedido de novo em instantes.',
+        code: 'deadlock',
+      });
+    }
     res.status(500).json({ error: 'Erro ao finalizar pedido' });
   } finally {
     client.release();

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import { pool } from '../db.js';
+import { pool, advisoryLockUsuario } from '../db.js';
 import { authenticateToken } from '../middleware/auth.js';
 
 const router = Router();
@@ -79,23 +79,33 @@ router.get('/me', authenticateToken, async (req, res) => {
 
 /** Atualiza endereço de entrega salvo no perfil (PATCH e PUT) */
 async function atualizarPerfilEndereco(req, res) {
+  const { endereco_entrega } = req.body ?? {};
+  if (typeof endereco_entrega !== 'string') {
+    return res.status(400).json({ error: 'Informe endereco_entrega (texto ou string vazia para limpar)' });
+  }
+  const client = await pool.connect();
   try {
-    const { endereco_entrega } = req.body ?? {};
-    if (typeof endereco_entrega !== 'string') {
-      return res.status(400).json({ error: 'Informe endereco_entrega (texto ou string vazia para limpar)' });
-    }
     const trimmed = String(endereco_entrega).trim();
     const stored = trimmed === '' ? null : trimmed;
-    const { rows } = await pool.query(
+    await client.query('BEGIN');
+    await advisoryLockUsuario(client, req.user.id);
+    const { rows } = await client.query(
       `UPDATE usuario SET endereco_entrega = $1 WHERE id = $2
        RETURNING id, nome, email, papel, endereco_entrega`,
       [stored, req.user.id]
     );
-    if (!rows[0]) return res.status(404).json({ error: 'Usuário não encontrado' });
+    if (!rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Usuário não encontrado' });
+    }
+    await client.query('COMMIT');
     res.json(rows[0]);
   } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error(e);
     res.status(500).json({ error: 'Erro ao atualizar perfil' });
+  } finally {
+    client.release();
   }
 }
 

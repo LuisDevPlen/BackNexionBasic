@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { pool } from '../db.js';
+import { pool, advisoryLockUsuario } from '../db.js';
 import { authenticateToken } from '../middleware/auth.js';
 
 const router = Router();
@@ -141,37 +141,43 @@ router.get('/', async (req, res) => {
 });
 
 router.post('/', async (req, res) => {
+  const { produto_id, quantidade = 1 } = req.body;
+  if (!produto_id) {
+    return res.status(400).json({ error: 'produto_id é obrigatório' });
+  }
+  const client = await pool.connect();
   try {
-    const { produto_id, quantidade = 1 } = req.body;
-    if (!produto_id) {
-      return res.status(400).json({ error: 'produto_id é obrigatório' });
-    }
     const q = Math.max(1, parseInt(String(quantidade), 10) || 1);
 
     let linhas = extrairLinhasDoBody(req.body);
-    linhas = await validarLinhasNoProduto(pool, produto_id, linhas);
+    await client.query('BEGIN');
+    await advisoryLockUsuario(client, req.user.id);
+    linhas = await validarLinhasNoProduto(client, produto_id, linhas);
 
-    const exists = await pool.query(
+    const exists = await client.query(
       `SELECT id, quantidade FROM carrinho
        WHERE usuario_id = $1 AND produto_id = $2 AND adicional_quantidades = $3::jsonb`,
       [req.user.id, produto_id, JSON.stringify(linhas)]
     );
     if (exists.rows[0]) {
-      const { rows } = await pool.query(
+      const { rows } = await client.query(
         `UPDATE carrinho SET quantidade = quantidade + $1 WHERE id = $2
          RETURNING id, usuario_id, produto_id, quantidade, adicional_quantidades`,
         [q, exists.rows[0].id]
       );
+      await client.query('COMMIT');
       return res.status(200).json(rows[0]);
     }
-    const { rows } = await pool.query(
+    const { rows } = await client.query(
       `INSERT INTO carrinho (usuario_id, produto_id, quantidade, adicional_quantidades)
        VALUES ($1, $2, $3, $4::jsonb)
        RETURNING id, usuario_id, produto_id, quantidade, adicional_quantidades`,
       [req.user.id, produto_id, q, JSON.stringify(linhas)]
     );
+    await client.query('COMMIT');
     res.status(201).json(rows[0]);
   } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
     if (e.code === '23503') {
       return res.status(400).json({ error: 'Produto inválido' });
     }
@@ -180,41 +186,63 @@ router.post('/', async (req, res) => {
     }
     console.error(e);
     res.status(500).json({ error: 'Erro ao adicionar ao carrinho' });
+  } finally {
+    client.release();
   }
 });
 
 router.put('/:itemId', async (req, res) => {
+  const { quantidade } = req.body;
+  const q = parseInt(String(quantidade), 10);
+  if (!Number.isFinite(q) || q < 1) {
+    return res.status(400).json({ error: 'quantidade deve ser >= 1' });
+  }
+  const client = await pool.connect();
   try {
-    const { quantidade } = req.body;
-    const q = parseInt(String(quantidade), 10);
-    if (!Number.isFinite(q) || q < 1) {
-      return res.status(400).json({ error: 'quantidade deve ser >= 1' });
-    }
-    const { rows } = await pool.query(
+    await client.query('BEGIN');
+    await advisoryLockUsuario(client, req.user.id);
+    const { rows } = await client.query(
       `UPDATE carrinho SET quantidade = $1
        WHERE id = $2 AND usuario_id = $3
        RETURNING id, produto_id, quantidade, adicional_quantidades`,
       [q, req.params.itemId, req.user.id]
     );
-    if (!rows[0]) return res.status(404).json({ error: 'Item não encontrado' });
+    if (!rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Item não encontrado' });
+    }
+    await client.query('COMMIT');
     res.json(rows[0]);
   } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error(e);
     res.status(500).json({ error: 'Erro ao atualizar item' });
+  } finally {
+    client.release();
   }
 });
 
 router.delete('/:itemId', async (req, res) => {
+  const client = await pool.connect();
   try {
-    const r = await pool.query(
+    await client.query('BEGIN');
+    await advisoryLockUsuario(client, req.user.id);
+    const r = await client.query(
       'DELETE FROM carrinho WHERE id = $1 AND usuario_id = $2 RETURNING id',
       [req.params.itemId, req.user.id]
     );
-    if (!r.rowCount) return res.status(404).json({ error: 'Item não encontrado' });
+    if (!r.rowCount) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Item não encontrado' });
+    }
+    await client.query('COMMIT');
     res.status(204).send();
   } catch (e) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error(e);
     res.status(500).json({ error: 'Erro ao remover item' });
+  } finally {
+    client.release();
   }
 });
 
