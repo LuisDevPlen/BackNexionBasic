@@ -14,13 +14,35 @@ import bcrypt from 'bcryptjs';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+/** Várias origens: CORS_ORIGIN="https://front.vercel.app,http://localhost:4200" */
+function corsAllowedList() {
+  const raw = process.env.CORS_ORIGIN || 'http://localhost:4200';
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 app.use(
   cors({
-    origin: process.env.CORS_ORIGIN || 'http://localhost:4200',
+    origin(origin, callback) {
+      const allowed = corsAllowedList();
+      if (!origin) return callback(null, true);
+      if (allowed.includes(origin)) return callback(null, true);
+      callback(null, false);
+    },
     credentials: true,
   })
 );
 app.use(express.json());
+
+app.get('/', (_req, res) => {
+  res.json({
+    ok: true,
+    service: 'Nexion API',
+    docs: { health: '/api/health', products: '/api/products' },
+  });
+});
 
 /** Health sem BD — útil na Vercel/Observability mesmo se DATABASE_URL falhar */
 app.get('/api/health', (_req, res) => {
