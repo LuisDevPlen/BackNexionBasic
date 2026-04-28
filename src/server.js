@@ -32,6 +32,8 @@ app.use(
       callback(null, false);
     },
     credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
 app.use(express.json());
@@ -63,7 +65,10 @@ async function prepareServer() {
   await seedSampleProducts();
 }
 
-app.use(async (_req, _res, next) => {
+app.use(async (req, res, next) => {
+  if (req.method === 'OPTIONS') {
+    return next();
+  }
   try {
     preparePromise ||= prepareServer();
     await preparePromise;
@@ -81,7 +86,16 @@ app.use('/api/users', userRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/orders', orderRoutes);
 
-app.use((err, _req, res, _next) => {
+function applyCorsOnError(req, res) {
+  const origin = req.headers.origin;
+  if (origin && corsAllowedList().includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  }
+}
+
+app.use((err, req, res, _next) => {
+  applyCorsOnError(req, res);
   console.error(err);
   res.status(500).json({ error: err.message || 'Erro interno' });
 });
