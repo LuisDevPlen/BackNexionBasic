@@ -165,3 +165,15 @@ BEGIN
       CHECK (forma_pagamento IS NULL OR forma_pagamento IN ('dinheiro', 'cartao', 'pix'));
   END IF;
 END $$;
+
+-- Opções da loja (singleton). imprimir_pedido_automatico: painel admin pode imprimir ao detectar pedido novo (com e-mail).
+CREATE TABLE IF NOT EXISTS loja_config (
+  id SMALLINT PRIMARY KEY DEFAULT 1,
+  CONSTRAINT loja_config_singleton_chk CHECK (id = 1),
+  imprimir_pedido_automatico BOOLEAN NOT NULL DEFAULT FALSE,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+INSERT INTO loja_config (id, imprimir_pedido_automatico)
+VALUES (1, FALSE)
+ON CONFLICT (id) DO NOTHING;

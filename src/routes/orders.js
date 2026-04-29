@@ -1,39 +1,16 @@
 import { Router } from 'express';
 import { pool, advisoryLockUsuario } from '../db.js';
 import { authenticateToken, requireAdmin } from '../middleware/auth.js';
+import {
+  enrichItensComAdicionais,
+  normalizarAdicionalItens,
+  parseLinhasDb,
+} from '../pedido-detail.js';
+import { sendPedidoNovoEmail } from '../mail-notify.js';
 
 const router = Router();
 
 const FORMAS_PAGAMENTO = ['dinheiro', 'cartao', 'pix'];
-
-function parseLinhasDb(val) {
-  if (val == null) return [];
-  if (Array.isArray(val)) return val;
-  if (typeof val === 'string') {
-    try {
-      const j = JSON.parse(val);
-      return Array.isArray(j) ? j : [];
-    } catch {
-      return [];
-    }
-  }
-  return [];
-}
-
-function normalizarAdicionalItens(arr) {
-  if (!Array.isArray(arr) || !arr.length) return [];
-  const map = new Map();
-  for (const row of arr) {
-    const aid = parseInt(row.adicional_id ?? row.id, 10);
-    const raw = parseInt(row.quantidade ?? row.qtd ?? 0, 10);
-    const q = Math.min(999, Math.max(0, Number.isFinite(raw) ? raw : 0));
-    if (!Number.isFinite(aid) || q <= 0) continue;
-    map.set(aid, (map.get(aid) ?? 0) + q);
-  }
-  const out = [...map.entries()].map(([adicional_id, quantidade]) => ({ adicional_id, quantidade }));
-  out.sort((a, b) => a.adicional_id - b.adicional_id);
-  return out;
-}
 
 async function somaExtrasLinhas(client, linhas) {
   if (!linhas.length) return 0;
@@ -43,31 +20,6 @@ async function somaExtrasLinhas(client, linhas) {
     if (rows[0]) sum += Number(rows[0].preco) * row.quantidade;
   }
   return sum;
-}
-
-/** Enriquece com nome/preço e quantidade por adicional */
-async function enrichItensComAdicionais(rows) {
-  const out = [];
-  for (const row of rows) {
-    const linhas = normalizarAdicionalItens(parseLinhasDb(row.adicional_quantidades));
-    const adicionais = [];
-    for (const l of linhas) {
-      const { rows: ads } = await pool.query(
-        `SELECT id, nome, preco FROM adicional WHERE id = $1`,
-        [l.adicional_id]
-      );
-      if (ads[0]) {
-        adicionais.push({
-          id: ads[0].id,
-          nome: ads[0].nome,
-          preco: ads[0].preco,
-          quantidade: l.quantidade,
-        });
-      }
-    }
-    out.push({ ...row, adicionais });
-  }
-  return out;
 }
 
 /** Lista: admin vê todos; cliente vê só os seus */
@@ -140,8 +92,7 @@ router.post('/checkout', authenticateToken, async (req, res) => {
       error: 'Informe forma_pagamento: dinheiro, cartao ou pix',
     });
   }
-  const addr =
-    typeof endereco_entrega === 'string' ? endereco_entrega.trim() : '';
+  const addr = typeof endereco_entrega === 'string' ? endereco_entrega.trim() : '';
   if (addr.length < 8) {
     return res.status(400).json({ error: 'Informe o endereço completo para entrega' });
   }
@@ -190,6 +141,11 @@ router.post('/checkout', authenticateToken, async (req, res) => {
     await client.query('DELETE FROM carrinho WHERE usuario_id = $1', [req.user.id]);
     await client.query('COMMIT');
     res.status(201).json(pedido);
+
+    const pid = pedido.id;
+    setImmediate(() => {
+      sendPedidoNovoEmail(pid).catch((err) => console.error('[mail] Falha ao enviar e-mail:', err.message));
+    });
   } catch (e) {
     await client.query('ROLLBACK').catch(() => {});
     console.error(e);

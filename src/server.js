@@ -11,6 +11,7 @@ import adicionaisRoutes from './routes/adicionais.js';
 import userRoutes from './routes/users.js';
 import cartRoutes from './routes/cart.js';
 import orderRoutes from './routes/orders.js';
+import lojaConfigRoutes from './routes/loja-config.js';
 import bcrypt from 'bcryptjs';
 
 const app = express();
@@ -71,6 +72,28 @@ const JSON_BODY_LIMIT = 52 * 1024 * 1024; // 52 MB
 app.use(express.json({ limit: JSON_BODY_LIMIT }));
 app.use(express.urlencoded({ extended: true, limit: JSON_BODY_LIMIT }));
 
+/**
+ * Na Vercel (serverless), o pedido pode chegar sem o prefixo /api que as rotas usam.
+ * Sem isto: GET /api/loja-config → Express pode ver só /loja-config → 404 "Cannot GET /api/loja-config".
+ */
+if (process.env.VERCEL) {
+  app.use((req, _res, next) => {
+    const raw = req.url ?? '/';
+    const q = raw.includes('?') ? raw.slice(raw.indexOf('?')) : '';
+    const pathPart = raw.split('?')[0] || '/';
+    if (
+      pathPart !== '/' &&
+      !pathPart.startsWith('/api') &&
+      !pathPart.startsWith('/uploads')
+    ) {
+      const fixed = '/api' + (pathPart.startsWith('/') ? pathPart : '/' + pathPart) + q;
+      req.url = fixed;
+      req.originalUrl = fixed;
+    }
+    next();
+  });
+}
+
 app.get('/', (_req, res) => {
   res.json({
     ok: true,
@@ -118,6 +141,7 @@ app.use('/api/adicionais', adicionaisRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/orders', orderRoutes);
+app.use('/api/loja-config', lojaConfigRoutes);
 
 function applyCorsOnError(req, res) {
   const origin = req.headers.origin;
